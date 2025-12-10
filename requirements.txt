@@ -1,6 +1,6 @@
 tgcrypto
 pyrofork
-yt_dlp
+yt_dlp>=2025.12.8
 flask
 aiofiles
 pytz
