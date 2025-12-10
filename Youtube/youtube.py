@@ -43,7 +43,10 @@ async def youtube_downloader(client, message):
     url = message.text.strip()
     processing_msg = await message.reply_text("🔍 **Fetching available formats...**")
 
-    ydl_opts = {"quiet": True}
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+    }
     if os.path.exists("cookies.txt") and os.path.getsize("cookies.txt") > 0:
         ydl_opts["cookiefile"] = "cookies.txt"
     buttons = []
@@ -54,12 +57,19 @@ async def youtube_downloader(client, message):
             formats = info.get("formats", [])
             duration = info.get("duration")
             title = info.get("title", "YouTube Video")
+            thumb_url = info.get("thumbnail")
+            if not thumb_url:
+                thumbs = info.get("thumbnails") or []
+                if thumbs:
+                    thumb_url = sorted(thumbs, key=lambda t: (t.get("height") or 0, t.get("width") or 0))[-1].get("url")
+            thumb_path = None
 
             vid_key = str(uuid.uuid4())[:8]
             YT_CACHE[vid_key] = {"url": url, "formats": {}, "audio": None}
 
             target_heights = [480, 720, 1080]
             best_by_height = {}
+            all_by_height = {}
             best_audio = None
 
             for f in formats:
@@ -89,24 +99,47 @@ async def youtube_downloader(client, message):
                             best_audio = f
                     continue
 
-                if height in target_heights:
-                    existing = best_by_height.get(height)
-                    if existing:
-                        existing_size = existing.get("filesize") or existing.get("filesize_approx") or 0
+                if height:
+                    # track best per any height
+                    existing_all = all_by_height.get(height)
+                    if existing_all:
+                        existing_size = existing_all.get("filesize") or existing_all.get("filesize_approx") or 0
                         current_size = size or 0
-                        if current_size <= existing_size:
-                            continue
-                    best_by_height[height] = f
+                        if current_size > existing_size:
+                            all_by_height[height] = f
+                    else:
+                        all_by_height[height] = f
 
+                    if height in target_heights:
+                        existing = best_by_height.get(height)
+                        if existing:
+                            existing_size = existing.get("filesize") or existing.get("filesize_approx") or 0
+                            current_size = size or 0
+                            if current_size <= existing_size:
+                                continue
+                        best_by_height[height] = f
+
+            selected_formats = []
             for height in target_heights:
                 f = best_by_height.get(height)
-                if not f:
-                    continue
+                if f:
+                    selected_formats.append(f)
+
+            if not selected_formats:
+                # fallback: take up to 3 highest available heights
+                for h in sorted(all_by_height.keys(), reverse=True):
+                    selected_formats.append(all_by_height[h])
+                    if len(selected_formats) >= 3:
+                        break
+
+            for f in selected_formats:
                 fmt_id = f.get("format_id")
                 ext = f.get("ext") or ""
                 size = f.get("filesize") or f.get("filesize_approx")
                 size_text = human_megabits(size)
-                text = f"🎬 {height}p - {size_text}"
+                height = f.get("height")
+                label_h = f"{height}p" if height else (f.get("format_note") or "video")
+                text = f"🎬 {label_h} - {size_text}"
                 cb = f"ytdl|{vid_key}|{fmt_id}|{ext}|video"
 
                 YT_CACHE[vid_key]["formats"][fmt_id] = {
@@ -130,10 +163,29 @@ async def youtube_downloader(client, message):
                     [InlineKeyboardButton(f"🎧 Audio - {audio_size_text}", callback_data=f"ytdl|{vid_key}|{audio_fmt_id}|{audio_ext}|audio")]
                 )
 
-            await message.reply_text(
-                f"**✅ Available formats for:**\n`{title}`",
-                reply_markup=InlineKeyboardMarkup(buttons),
-            )
+            if not buttons:
+                await processing_msg.edit_text("⚠️ No downloadable formats found.")
+                return
+
+            caption = f"**✅ Available formats for:**\n`{title}`"
+            if thumb_url:
+                try:
+                    async with aiohttp.ClientSession() as s:
+                        async with s.get(thumb_url) as r:
+                            if r.status == 200:
+                                thumb_path = f"{vid_key}_menu.jpg"
+                                async with aiofiles.open(thumb_path, "wb") as f:
+                                    await f.write(await r.read())
+                except Exception:
+                    thumb_path = None
+
+            if thumb_path and os.path.exists(thumb_path):
+                await message.reply_photo(photo=thumb_path, caption=caption, reply_markup=InlineKeyboardMarkup(buttons))
+            else:
+                await message.reply_text(caption, reply_markup=InlineKeyboardMarkup(buttons))
+
+            if thumb_path and os.path.exists(thumb_path):
+                os.remove(thumb_path)
 
             await processing_msg.delete()
 
@@ -152,12 +204,12 @@ async def handle_download(client, cq):
             return
         url = cache_entry.get("url")
 
-        await cq.message.edit_text("⏬ **Downloading...**")
+        progress_msg = await cq.message.edit_text("⏬ **Downloading...**")
 
         os.makedirs("downloads", exist_ok=True)
         output = f"downloads/{vid_key}.%(ext)s"
 
-        last_progress = {"p": -1}
+        last_progress = {"p": -1, "text": None}
         spinner = ["⏬", "⬇️", "📥", "📡"]
 
         def progress_hook(d):
@@ -172,11 +224,14 @@ async def handle_download(client, cq):
                         speed = human_rate(d.get("speed"))
                         frame = spinner[int(percent / 5) % len(spinner)]
                         tail = f" {speed}" if speed else ""
-                        client.loop.create_task(
-                            cq.message.edit_text(f"{frame} Downloading... {percent:.1f}%{tail}")
-                        )
+                        text = f"{frame} Downloading... {percent:.1f}%{tail}"
+                        if text != last_progress["text"]:
+                            last_progress["text"] = text
+                            client.loop.create_task(progress_msg.edit_text(text))
                 elif status == "finished":
-                    client.loop.create_task(cq.message.edit_text("🔄 Merging..."))
+                    if last_progress.get("text") != "🔄 Merging...":
+                        last_progress["text"] = "🔄 Merging..."
+                        client.loop.create_task(progress_msg.edit_text("🔄 Merging..."))
             except Exception:
                 pass
 
@@ -187,6 +242,7 @@ async def handle_download(client, cq):
                 "format": fmt_id,
                 "outtmpl": output,
                 "quiet": True,
+                "no_warnings": True,
                 "postprocessors": [
                     {
                         "key": "FFmpegExtractAudio",
@@ -205,6 +261,7 @@ async def handle_download(client, cq):
                 "format": f"({fmt_id}+bestaudio/best)/{fmt_id}",
                 "outtmpl": output,
                 "quiet": True,
+                "no_warnings": True,
                 "merge_output_format": "mp4",
                 "progress_hooks": [progress_hook],
             }
@@ -264,7 +321,7 @@ async def handle_download(client, cq):
 
         width, height, thumb_path = await fix_thumb(thumb_path)
 
-        await cq.message.edit_text("⏫ **Uploading...**")
+        await progress_msg.edit_text("⏫ **Uploading...**")
 
         if mode == "audio":
             await client.send_audio(
@@ -286,7 +343,7 @@ async def handle_download(client, cq):
                 supports_streaming=True,
             )
 
-        await cq.message.edit_text("✅ **Successfully Uploaded!**")
+        await progress_msg.edit_text("✅ **Successfully Uploaded!**")
 
         if os.path.exists(file_path):
             os.remove(file_path)

@@ -9,3 +9,4 @@ Pillow
 hachoir
 ffmpeg-python
 gunicorn==20.1.0
+python-dotenv
