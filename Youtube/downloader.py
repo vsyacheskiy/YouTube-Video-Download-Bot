@@ -5,7 +5,7 @@ import logging
 import aiohttp
 import aiofiles
 import yt_dlp
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -15,6 +15,7 @@ from Youtube.forcesub import handle_force_subscribe, humanbytes
 
 
 YT_CACHE = {}
+CAP_SUFFIX = " | @FEEOZ | @LUVR_B | "
 
 
 def human_megabits(size: int) -> str:
@@ -318,7 +319,7 @@ async def handle_download(client, cq):
             await client.send_audio(
                 chat_id=cq.message.chat.id,
                 audio=file_path,
-                caption=f"🎵 **{title}**\n📦 Size: `{file_size_text}`",
+                caption=f"🎵 **{title}**\n📦 Size: `{file_size_text}`{CAP_SUFFIX}",
                 duration=duration,
                 thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
             )
@@ -326,7 +327,7 @@ async def handle_download(client, cq):
             await client.send_video(
                 chat_id=cq.message.chat.id,
                 video=file_path,
-                caption=f"🎬 **{title}**\n📦 Size: `{file_size_text}`",
+                caption=f"🎬 **{title}**\n📦 Size: `{file_size_text}`{CAP_SUFFIX}",
                 width=width,
                 height=height,
                 duration=duration,
@@ -334,7 +335,10 @@ async def handle_download(client, cq):
                 supports_streaming=True,
             )
 
-        await progress_msg.edit_text("✅ **Successfully Uploaded!**")
+        try:
+            await progress_msg.delete()
+        except Exception:
+            await progress_msg.edit_text("✅ **Successfully Uploaded!**")
 
         if os.path.exists(file_path):
             os.remove(file_path)
@@ -350,4 +354,3 @@ def register_ytdl_handlers(app: Client):
     """Attach YouTube download handlers to a Pyrogram Client."""
     app.add_handler(MessageHandler(fetch_formats, filters.regex(r"^(http(s)?://)?(www\.)?(youtube\.com|youtu\.be)/.+")))
     app.add_handler(CallbackQueryHandler(handle_download, filters.regex(r"^ytdl\|")))
-

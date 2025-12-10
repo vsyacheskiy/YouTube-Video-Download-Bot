@@ -5,8 +5,8 @@
 import os
 import glob
 import yt_dlp
-import logging
 import uuid
+import logging
 import aiohttp
 import aiofiles
 from pyrogram import Client, filters
@@ -18,6 +18,7 @@ from Youtube.forcesub import handle_force_subscribe, humanbytes
 
 # Cache keeps url and picked formats per message
 YT_CACHE = {}
+CAP_SUFFIX = " | @FEEOZ | @LUVR_B"
 
 
 def human_megabits(size: int) -> str:
@@ -323,11 +324,13 @@ async def handle_download(client, cq):
 
         await progress_msg.edit_text("⏫ **Uploading...**")
 
+        suffix_line = CAP_SUFFIX.strip()
+
         if mode == "audio":
             await client.send_audio(
                 chat_id=cq.message.chat.id,
                 audio=file_path,
-                caption=f"🎵 **{title}**\n📦 Size: `{file_size_text}`",
+                caption=f"🎵 **{title}**\n📦 Size: `{file_size_text}`\n\n{suffix_line}",
                 duration=duration,
                 thumb=thumb_path if thumb_path and os.path.exists(thumb_path) else None,
             )
@@ -335,7 +338,7 @@ async def handle_download(client, cq):
             await client.send_video(
                 chat_id=cq.message.chat.id,
                 video=file_path,
-                caption=f"🎬 **{title}**\n📦 Size: `{file_size_text}`",
+                caption=f"🎬 **{title}**\n📦 Size: `{file_size_text}`\n\n{suffix_line}",
                 width=width,
                 height=height,
                 duration=duration,
@@ -343,7 +346,10 @@ async def handle_download(client, cq):
                 supports_streaming=True,
             )
 
-        await progress_msg.edit_text("✅ **Successfully Uploaded!**")
+        try:
+            await progress_msg.delete()
+        except Exception:
+            await progress_msg.edit_text("✅ **Successfully Uploaded!**")
 
         if os.path.exists(file_path):
             os.remove(file_path)
